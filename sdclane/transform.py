@@ -4,12 +4,18 @@
 """
 
 from . import config
-from .utility import make_pipeline
+from .utility import make_pipeline, read_rgb_imgs
 from .camera import build_undistort_function
 from .line_detection import build_default_detect_lines_function
 
 import cv2
-import numpy
+import numpy as np
+
+from skimage.measure import LineModel, ransac
+from skimage.morphology import binary_closing, disk
+from skimage.measure import label, regionprops
+
+from sklearn.cluster import KMeans
 
 def build_roi_crop_function(roi, roi_value=1):
     """Return a function that can be used a step in pipleline
@@ -28,15 +34,17 @@ def build_roi_crop_function(roi, roi_value=1):
     return crop_roi
 
 
-def build_trapezoidal_bottom_roi_crop_function(W, H, roi_value=1):
-    """`W`, `H`: image width and height
+def build_trapezoidal_bottom_roi_crop_function():
     """
+    """
+    test_img = read_rgb_imgs([config.warp_estimate_img])[0]
+    H, W = test_img.shape[:2]
     trapezoidal_roi = np.array([[
         (40,H), 
         (W/2-40, H/2+80), 
         (W/2+40, H/2+80),
         (W-40,H)]], dtype=np.int32)
-    return build_roi_crop_function(trapezoidal_roi, roi_value)
+    return build_roi_crop_function(trapezoidal_roi, roi_value=1)
 
 
 class PerspectiveTransformer(object):
@@ -67,7 +75,7 @@ class PerspectiveTransformer(object):
         bird-eye view, the two boundaries should be roughly parallel.
         """
         # image shape
-        H, W = test_img.shape[:2]
+        H, W = line_img.shape[:2]
         # find line coordinates
         ys, xs = np.where(line_img > 0)
         # clustering of two lines
@@ -104,6 +112,7 @@ class PerspectiveTransformer(object):
         # estimate meter-per-pixel in the transformed image
         self.x_mpp = 3 / np.abs(bottom_x1-bottom_x2)
         self.y_mpp = self.estimate_ympp(line_img)
+        return self
 
 
     def transform(self, img):
@@ -121,7 +130,6 @@ class PerspectiveTransformer(object):
         after the transform
         """
         assert binary_img.ndim == 2
-        assert binary_img.dtype = np.bool
         # convert the binary to color image
         img = (np.dstack([binary_img, ]*3) * 255).astype(np.uint8)
         warped_img = self.transform(img)
@@ -155,12 +163,12 @@ class PerspectiveTransformer(object):
 
 
 def build_default_warp_transform_function():
-    H, W = config.test_img.shape[:2]
+    test_img = read_rgb_imgs([config.warp_estimate_img])[0]
     img_pipe = make_pipeline([
         build_undistort_function(), 
         build_default_detect_lines_function(), 
-        build_trapezoidal_bottom_roi_crop_function(W, H)])
-    cropped_line_img = img_pipe(config.test_img)
+        build_trapezoidal_bottom_roi_crop_function()])
+    cropped_line_img = img_pipe(test_img)
 
     pt = PerspectiveTransformer().fit(cropped_line_img)
 
