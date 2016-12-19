@@ -172,6 +172,6 @@ def build_default_warp_transform_function():
 
     pt = PerspectiveTransformer().fit(cropped_line_img)
 
-    return (pt.transform, pt.binary_transform)
+    return (pt.transform, pt.binary_transform, pt.x_mpp, pt.y_mpp)
 
 
