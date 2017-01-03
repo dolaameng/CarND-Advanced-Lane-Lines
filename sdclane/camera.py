@@ -42,7 +42,7 @@ class CameraCalibrator(object):
                 cv2.drawChessboardCorners(img, (nx, ny), corners, ret)
             else:
                 # ignore images that cannot be used
-                print("Cannot find corner points in image")
+                print("Warning: Cannot find corner points in image")
         ret, self.M, self.d, rvecs, tvecs = cv2.calibrateCamera(objpts, imgpts, img_size, None, None)
         return self
     def save(self, model_file):

@@ -61,7 +61,8 @@ class PerspectiveTransformer(object):
             if it is None, it will be estimated as half the image height plus a fixed bias.
         `PerspectiveTransformer.M`: transform matrix
         """
-        self.M = None
+        self.M = None # transform matrix
+        self.invM = None # inverse transform matrix
         self.forward_distance = forward_distance
         # meters per pixel on y axis
         self.y_mpp = None
@@ -109,21 +110,24 @@ class PerspectiveTransformer(object):
                           dtype=np.float32)
         # estimate the transform matrix
         self.M =  cv2.getPerspectiveTransform(src_pts, dst_pts)
+        self.invM = cv2.getPerspectiveTransform(dst_pts, src_pts)
         # estimate meter-per-pixel in the transformed image
         self.x_mpp = 3 / np.abs(bottom_x1-bottom_x2)
         self.y_mpp = self.estimate_ympp(line_img)
         return self
 
 
-    def transform(self, img):
+    def transform(self, img, inverse=False):
         """`img`: color image with shape (H, W, C) and dtype np.uint8.
-        Use `np.dstack` to stack binary/gray image before `transform` them.s
+        `inverse`: whether it is an inverse transform
         """
+        M = self.invM if inverse else self.M
         H, W = img.shape[:2]
-        warped_img = cv2.warpPerspective(img, self.M, (W, H), flags=cv2.INTER_LINEAR)
+        warped_img = cv2.warpPerspective(img, M, (W, H), flags=cv2.INTER_LINEAR)
         return warped_img
 
-    def binary_transform(self, binary_img):
+
+    def binary_transform(self, binary_img, inverse=False):
         """Transform a binary image (e.g., output of a line detection). 
         it seems `cv2.warpPerspective` doesn't work on that directly, so 
         convert it to a three-channel image first and convert it back
@@ -132,7 +136,7 @@ class PerspectiveTransformer(object):
         assert binary_img.ndim == 2
         # convert the binary to color image
         img = (np.dstack([binary_img, ]*3) * 255).astype(np.uint8)
-        warped_img = self.transform(img)
+        warped_img = self.transform(img, inverse)
         # convert it back to the binary image
         warped_img = (warped_img[:,:,0] > 0).astype(np.bool)
         return warped_img
@@ -162,7 +166,7 @@ class PerspectiveTransformer(object):
 
 
 
-def build_default_warp_transform_function():
+def build_default_warp_transformer():
     test_img = read_rgb_imgs([config.warp_estimate_img])[0]
     img_pipe = make_pipeline([
         build_undistort_function(), 
@@ -172,6 +176,6 @@ def build_default_warp_transform_function():
 
     pt = PerspectiveTransformer().fit(cropped_line_img)
 
-    return (pt.transform, pt.binary_transform, pt.x_mpp, pt.y_mpp)
+    return pt
 
 
