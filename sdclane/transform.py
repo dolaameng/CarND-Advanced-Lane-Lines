@@ -6,7 +6,7 @@
 from . import config
 from .utility import make_pipeline, read_rgb_imgs
 from .camera import build_undistort_function
-from .line_detection import build_default_detect_lines_function
+from .line_detection import build_line_detect_function
 
 import cv2
 import numpy as np
@@ -40,7 +40,7 @@ def build_trapezoidal_bottom_roi_crop_function():
     test_img = read_rgb_imgs([config.warp_estimate_img])[0]
     H, W = test_img.shape[:2]
     trapezoidal_roi = np.array([[
-        (40,H), 
+        (100,H), 
         (W/2-40, H/2+80), 
         (W/2+40, H/2+80),
         (W-40,H)]], dtype=np.int32)
@@ -170,7 +170,7 @@ def build_default_warp_transformer():
     test_img = read_rgb_imgs([config.warp_estimate_img])[0]
     img_pipe = make_pipeline([
         build_undistort_function(), 
-        build_default_detect_lines_function(), 
+        build_line_detect_function(), 
         build_trapezoidal_bottom_roi_crop_function()])
     cropped_line_img = img_pipe(test_img)
 

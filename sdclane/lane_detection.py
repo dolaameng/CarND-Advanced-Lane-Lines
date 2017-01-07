@@ -3,7 +3,7 @@
 
 from . import config
 from .camera import build_undistort_function
-from .line_detection import build_default_line_detector
+from .line_detection import LineDetector
 from .transform import build_trapezoidal_bottom_roi_crop_function
 from .transform import build_default_warp_transformer
 from .utility import make_pipeline
@@ -18,11 +18,11 @@ class LaneDetector(object):
         # 1. undistort function 
         self.undistort = build_undistort_function()
         # 2. line detection function
-        self.line_detector = build_default_line_detector()
+        self.line_detector = LineDetector()
         # 3. roi crop function
         self.roi_crop = build_trapezoidal_bottom_roi_crop_function()
         # 4. bird-eye transformer object - it's stateful
-        # self.transformer = build_default_warp_transformer()
+        self.transformer = build_default_warp_transformer()
     def detect_lane(self, img):
         """`img`: raw image from camera
         Returns:
@@ -31,9 +31,9 @@ class LaneDetector(object):
         """
         # pipeline from raw to lane image
         undistorted_img = self.undistort(img)
-        return self.roi_crop(self.line_detector.transform(undistorted_img))
+        # return self.roi_crop(self.line_detector.detect(undistorted_img))
         image_pipe = make_pipeline([
-                    self.line_detector.transform,
+                    self.line_detector.detect,
                     self.roi_crop,
                     self.transformer.binary_transform])
         lane_img = image_pipe(undistorted_img)
