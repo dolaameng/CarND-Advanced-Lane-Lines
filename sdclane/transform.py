@@ -40,7 +40,7 @@ def build_trapezoidal_bottom_roi_crop_function():
     test_img = read_rgb_imgs([config.warp_estimate_img])[0]
     H, W = test_img.shape[:2]
     trapezoidal_roi = np.array([[
-        (100,H), 
+        (40,H), 
         (W/2-40, H/2+80), 
         (W/2+40, H/2+80),
         (W-40,H)]], dtype=np.int32)

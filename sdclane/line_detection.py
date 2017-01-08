@@ -43,6 +43,7 @@ class LineDetector(object):
         gray = (l_img * 0.6 + s_img * 0.4).astype(np.uint8)
 
 
+
         s_x, s_y, s_d = self.get_sobel(gray, self.ksize)
         s_bin = (self.filter_by(s_x, 25, 125) 
                     & (self.filter_by(s_d, 0.5, 1.2) # left line
