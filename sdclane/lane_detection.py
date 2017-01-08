@@ -31,6 +31,7 @@ class LaneDetector(object):
         """
         # pipeline from raw to lane image
         undistorted_img = self.undistort(img)
+        return self.line_detector.detect(self.transformer.transform(undistorted_img))
         # return self.roi_crop(self.line_detector.detect(undistorted_img))
         image_pipe = make_pipeline([
                     self.line_detector.detect,
@@ -63,11 +64,12 @@ class LaneDetector(object):
             ys, xs = np.where(region > 0)
             is_valid_region = (len(xs) > 0) and (W/3 <= (xs.max()-xs.min()) <= W*5/6)
             if is_valid_region:
-                mx = (np.min(xs) + np.max(xs))/2
-                my = np.mean(ys) + offset
                 lx = np.min(xs)
-                ly = my
                 rx = np.max(xs)
+                mx = (lx + rx)/2
+
+                my = np.mean(ys) + offset
+                ly = my
                 ry = my
                 if len(mxs) == 0 or np.abs(mx - np.mean(mxs)) <= 100:
                     mxs.append(mx)
