@@ -9,7 +9,7 @@ from .transform import build_default_warp_transformer
 from .utility import make_pipeline
 
 import numpy as np
-from skimage.morphology import remove_small_objects
+from skimage.morphology import remove_small_objects, remove_small_holes
 import cv2
 
 class LaneDetector(object):
@@ -24,7 +24,32 @@ class LaneDetector(object):
         # 4. bird-eye transformer object - it's stateful
         self.transformer = build_default_warp_transformer()
     def detect_video(self, clip):
-        pass
+        """`clip`: A VideoFileClip from moviepy.editor
+        Returns: An output VideoClip with marked lanes and estimated parameters
+        """
+        def process_frame(frame):
+            """Take a RGB image frame and returns an RGB image frame"""
+            undistorted_frame = self.undistort(frame)
+            image_pipe = make_pipeline([
+                        self.detect_line,
+                        self.roi_crop,
+                        self.transformer.binary_transform])
+            lane_frame = image_pipe(undistorted_frame)
+            # search for pixels from previous frames
+            lane_pixels = self.get_lane_pixels_by_history(lane_frame)
+            # fall back to blind search
+            if lane_pixels is None:
+                lane_pixels = self.get_lane_pixels(lane_frame)
+            H, W = lane_frame.shape[:2]
+            lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
+                self.transformer.x_mpp, self.transformer.y_mpp)
+            l_curvature, r_curvature, offset = lane_params
+            text = "curvature: %.2f, %s of center: %.2f" % (r_curvature, 
+                                                            "left" if offset > 0 else "right",
+                                                            offset)
+            marked_lane_frame = self.draw_lanes(undistorted_frame, lane_pixels, text)
+            return marked_lane_frame
+        return clip.fl_image(process_frame)
     def detect_image(self, img):
         """`img`: raw image from camera
         Returns:
@@ -37,9 +62,11 @@ class LaneDetector(object):
         image_pipe = make_pipeline([
                     self.detect_line,
                     self.roi_crop,
-                    self.transformer.binary_transform])
+                    self.transformer.binary_transform
+        ])
         lane_img = image_pipe(undistorted_img)
         lane_pixels = self.get_lane_pixels(lane_img)
+
         # get the real lane curvature and center offset
         H, W = lane_img.shape[:2]
         lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
@@ -47,40 +74,50 @@ class LaneDetector(object):
         # draw the lane back
         l_curvature, r_curvature, offset = lane_params
         # print(l_curvature, r_curvature)
-        text = "curvature: %.2f, %s of center: %.2f" % (m_curvature, 
+        text = "curvature: %.2f, %s of center: %.2f" % (r_curvature, 
                                                         "left" if offset > 0 else "right",
                                                         offset)
         marked_lane_img = self.draw_lanes(undistorted_img, lane_pixels, text)
         return lane_params, marked_lane_img
 
+    def get_lane_pixels_by_history(self, lane_img):
+        return None
+
     def get_lane_pixels(self, lane_img):
         H, W = lane_img.shape[:2]
-        lane_img = remove_small_objects(lane_img.copy())
-        window, stride = 100, 10
+        # lane_img = remove_small_holes(lane_img, min_size=128)
+        # lane_img = remove_small_objects(lane_img, min_size=16)
+        window, stride = 50, 10
         lxs, lys = [], [] # lane left boundary coordinates
         mxs, mys = [], [] # lane middle coordinates
         rxs, rys = [], [] # lane right boundary coordinates
-        for offset in range(0, H+1, stride):
+        for offset in range(0, H-window+1, stride):
             region = lane_img[offset:offset+window, :]
             ys, xs = np.where(region > 0)
-            # i = (xs >= 150)
-            # ys, xs = ys[i], xs[i]
-            is_valid_region = (len(xs) > 0) and (W/3 <= (xs.max()-xs.min()) <= W*5/6)
+            if len(xs) <= 25: continue
+            xs = np.array(sorted(xs))
+            i = np.argmax(np.diff(xs))
+            left_xs = xs[:i-3]
+            right_xs = xs[i+1:]
+            is_valid_region = (W/3 <= (xs.max()-xs.min()) <= W*5/6)  
             if is_valid_region:
-                lx = np.min(xs)#xs[xs <= np.percentile(xs, 10)].mean()#np.min(xs)
-                rx = np.max(xs)#xs[xs >= np.percentile(xs, 90)].mean()#np.max(xs)
+                lx = np.mean(left_xs)#np.min(xs)#
+                rx = np.mean(right_xs)#np.max(xs)#
                 mx = (lx + rx)/2
 
                 my = np.mean(ys) + offset
                 ly = my
                 ry = my
-                if len(mxs) == 0 or np.abs(mx - np.mean(mxs)) <= 100:
-                    mxs.append(mx)
-                    mys.append(my)
-                    lxs.append(lx)
-                    lys.append(ly)
-                    rxs.append(rx)
-                    rys.append(ry)
+                if True:#len(mxs) == 0 or np.abs(mx - np.mean(mxs)) <= 100:
+                    if left_xs.max()-left_xs.min() <= W/10:
+                        lxs.append(lx)
+                        lys.append(ly)
+                    if right_xs.max()-right_xs.min() <= W/10:
+                        rxs.append(rx)
+                        rys.append(ry)
+                    if (left_xs.max()-left_xs.min() <= W/10) and (right_xs.max()- right_xs.min() <= W/10): 
+                        mxs.append(mx)
+                        mys.append(my)
 
         lxs,lys,mxs,mys,rxs,rys = map(np.array, [lxs,lys,mxs,mys,rxs,rys])
         return lxs, lys, mxs, mys, rxs, rys
@@ -130,7 +167,7 @@ class LaneDetector(object):
         for xs, col in zip([lxhat, mxhat, rxhat], 
                            [(255,0,0), (0,255,0), (0,0,255)]):
             pts = np.array([(x, y) for x, y in zip(xs, y_span)])
-            lane_layer = cv2.polylines(lane_layer, [pts], isClosed=False, color=col, thickness=10)
+            lane_layer = cv2.polylines(lane_layer, [pts], isClosed=False, color=col, thickness=20)
 
         lane_layer = self.transformer.transform(lane_layer, inverse=True)
         lane_img = cv2.addWeighted(undistorted_img, 1., lane_layer, 1., 1)
