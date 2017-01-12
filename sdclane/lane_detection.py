@@ -12,6 +12,8 @@ import numpy as np
 from skimage.morphology import remove_small_objects, remove_small_holes
 import cv2
 
+np.random.seed(1337)
+
 class LaneDetector(object):
     def __init__(self):
         # setup the pipe to get the line image and meter-per-pixel measurements
@@ -23,44 +25,78 @@ class LaneDetector(object):
         self.roi_crop = build_trapezoidal_bottom_roi_crop_function()
         # 4. bird-eye transformer object - it's stateful
         self.transformer = build_default_warp_transformer()
-        # store lane pixels from last frame for detection in videos
-        self.last_lane_pixels = None
+        # 5. use the meter-per-pixel on x an dy
+        self.x_mpp = 30/720
+        self.y_mpp = 3.7/700
     def detect_video(self, clip):
         """`clip`: A VideoFileClip from moviepy.editor
         Returns: An output VideoClip with marked lanes and estimated parameters
         """
-        def process_frame(frame):
-            """Take a RGB image frame and returns an RGB image frame"""
-            undistorted_frame = self.undistort(frame)
-            image_pipe = make_pipeline([
-                        self.detect_line,
-                        self.roi_crop,
-                        self.transformer.binary_transform])
-            lane_frame = image_pipe(undistorted_frame)
-            H, W = lane_frame.shape[:2]
-            try:
-                # search for pixels from previous frames
-                lane_pixels = self.get_lane_pixels_by_history(lane_frame)
-                # fall back to blind search
-                if lane_pixels is None:
-                    lane_pixels = self.get_lane_pixels(lane_frame)
-                lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
-                    self.transformer.x_mpp, self.transformer.y_mpp)
-            except:
-                # when having problems with detecting in current frame, use pervious one
-                lane_pixels = self.last_lane_pixels
-                lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
-                    self.transformer.x_mpp, self.transformer.y_mpp)
-            self.last_lane_pixels = lane_pixels
+        # store detection result from last frame, (lane_pixels, lane_params, models_in_pixel)
+        self.last_detection = None
+        return clip.fl_image(self.process_frame)
+    def process_frame(self, frame):
+        undistorted_img = self.undistort(frame)
+        # lane_img = self.detect_line(self.transformer.transform(undistorted_img))
+        image_pipe = make_pipeline([
+                    self.detect_line,
+                    self.roi_crop,
+                    self.transformer.binary_transform
+        ])
+        lane_img = image_pipe(undistorted_img)
+        H, W = lane_img.shape[:2]
+        # try:
+        if self.last_detection is None: # first frame, search from scratch
+
+            lane_params, marked_lane_img, lane_pixels, models_in_pixel = self.detect_image(frame, return_full_estimate=True)
+            self.last_detection = (lane_pixels, lane_params, models_in_pixel)
+            return marked_lane_img
+        else: # try faster estimate using previous detection result
+
+            # restore last result
+            last_lane_pixels, last_lane_params, last_models_in_pixel = self.last_detection
+            last_lmodel, _, last_rmodel = last_models_in_pixel
+            # build new lane_pixels, lane_params, models_in_pixel
+            window, stride = 50, 10
+            search_ys = list(range(0, H-window+1, stride))
+            search_lxs = np.polyval(last_lmodel, search_ys).astype(np.int32)
+            search_rxs = np.polyval(last_rmodel, search_ys).astype(np.int32)
+            lxs, mxs, rxs, lys, mys, rys = [], [], [], [], [], []
+            for lx, rx, yy in zip(search_lxs, search_rxs, search_ys):
+                lregion = lane_img[yy:yy+stride, lx-window:lx+window]
+                ys, xs = np.where(lregion>0)
+                for y, x in zip(ys, xs):
+                    lxs.append(x+lx-window)
+                    lys.append(y+yy)
+                rregion = lane_img[yy:yy+stride, rx-window:rx+window]
+                ys, xs = np.where(rregion>0)
+                for y, x in zip(ys, xs):
+                    rxs.append(x+rx-window)
+                    rys.append(y+yy)
+            mxs, mys = rxs, rys #TODO
+            lxs,lys,mxs,mys,rxs,rys = map(np.array, [lxs,lys,mxs,mys,rxs,rys])
+            lane_pixels = (lxs, lys, mxs, mys, rxs, rys)
+            lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
+                self.transformer.x_mpp, self.transformer.y_mpp)
+            _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
+            # update last result
+            self.last_detection = (lane_pixels, lane_params, models_in_pixel)
             
-            l_curvature, r_curvature, offset = lane_params
-            text = "curvature: %.2f, %s of center: %.2f" % (r_curvature, 
-                                                            "left" if offset > 0 else "right",
-                                                            offset)
-            marked_lane_frame = self.draw_lanes(undistorted_frame, lane_pixels, text)
-            return marked_lane_frame
-        return clip.fl_image(process_frame)
-    def detect_image(self, img):
+        # except:
+
+        #     # if anything goes wrong, just use the previous result as default
+        #     if self.last_detection is None: return frame
+        #     lane_pixels, lane_params, models_in_pixel = self.last_detection
+
+        l_curvature, r_curvature, offset = lane_params
+        text = "curvature: %.2f, %s of center: %.2f" % (r_curvature, 
+                                                        "left" if offset > 0 else "right",
+                                                        offset)
+        marked_lane_img = self.draw_lanes(undistorted_img, models_in_pixel, text)
+        return marked_lane_img
+        
+
+    def detect_image(self, img, return_full_estimate=False):
         """`img`: raw image from camera
         Returns:
             - `lane_params`: radius_of_curvature, offset from camera center
@@ -77,6 +113,10 @@ class LaneDetector(object):
         lane_img = image_pipe(undistorted_img)
         lane_pixels = self.get_lane_pixels(lane_img)
 
+        # lane_img = remove_small_holes(lane_img, min_size=128)
+        # lane_img = remove_small_objects(lane_img, min_size=100)
+        # return None, np.dstack([lane_img, lane_img, lane_img]).astype(np.uint8) * 255
+
         # get the real lane curvature and center offset
         H, W = lane_img.shape[:2]
         lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
@@ -87,20 +127,18 @@ class LaneDetector(object):
         text = "curvature: %.2f, %s of center: %.2f" % (r_curvature, 
                                                         "left" if offset > 0 else "right",
                                                         offset)
-        marked_lane_img = self.draw_lanes(undistorted_img, lane_pixels, text)
-        return lane_params, marked_lane_img
-
-    def get_lane_pixels_by_history(self, lane_img):
-        if not self.last_lane_pixels:
-            return None
+        _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
+        marked_lane_img = self.draw_lanes(undistorted_img, models_in_pixel, text)
+        if return_full_estimate:
+            return lane_params, marked_lane_img, lane_pixels, models_in_pixel
         else:
-            return None #TODO
-            # find lane from result of previous frame
+            return lane_params, marked_lane_img
+
 
     def get_lane_pixels(self, lane_img):
         H, W = lane_img.shape[:2]
-        # lane_img = remove_small_holes(lane_img, min_size=128)
-        # lane_img = remove_small_objects(lane_img, min_size=16)
+        lane_img = remove_small_holes(lane_img, min_size=128)
+        lane_img = remove_small_objects(lane_img, min_size=128+16)
         window, stride = 50, 10
         lxs, lys = [], [] # lane left boundary coordinates
         mxs, mys = [], [] # lane middle coordinates
@@ -116,7 +154,7 @@ class LaneDetector(object):
             is_valid_region = (W/3 <= (xs.max()-xs.min()) <= W*5/6)  
             if is_valid_region:
                 lx = np.mean(left_xs)#np.min(xs)#
-                rx = np.mean(right_xs)#np.max(xs)#
+                rx = np.median(right_xs)#np.max(xs)#
                 mx = (lx + rx)/2
 
                 my = np.mean(ys) + offset
@@ -168,9 +206,9 @@ class LaneDetector(object):
         offset = np.polyval(mmodel, y) - W*x_mpp/2
         return (l_curvature, r_curvature, offset), (lmodel, mmodel, rmodel)
 
-    def draw_lanes(self, undistorted_img, lane_pixels, text=""):
+    def draw_lanes(self, undistorted_img, models_in_pixel, text=""):
         H, W = undistorted_img.shape[:2]
-        _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
+        # _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
         lmodel, mmodel, rmodel = models_in_pixel
         y_span = range(0, undistorted_img.shape[0]+1)
         lxhat = np.polyval(lmodel, y_span).astype(np.int32)
