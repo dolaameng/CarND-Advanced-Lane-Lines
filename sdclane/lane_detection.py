@@ -25,9 +25,9 @@ class LaneDetector(object):
         self.roi_crop = build_trapezoidal_bottom_roi_crop_function()
         # 4. bird-eye transformer object - it's stateful
         self.transformer = build_default_warp_transformer()
-        # 5. use the meter-per-pixel on x an dy
-        self.x_mpp = 30/720
-        self.y_mpp = 3.7/700
+        # # 5. use the in-class meter-per-pixel on x an dy
+        # self.transformer.x_mpp = 30/720
+        # self.transformer.y_mpp = 3.7/700
     def detect_video(self, clip):
         """`clip`: A VideoFileClip from moviepy.editor
         Returns: An output VideoClip with marked lanes and estimated parameters
@@ -45,53 +45,62 @@ class LaneDetector(object):
         ])
         lane_img = image_pipe(undistorted_img)
         H, W = lane_img.shape[:2]
-        # try:
-        if self.last_detection is None: # first frame, search from scratch
-
-            lane_params, marked_lane_img, lane_pixels, models_in_pixel = self.detect_image(frame, return_full_estimate=True)
-            self.last_detection = (lane_pixels, lane_params, models_in_pixel)
-            return marked_lane_img
-        else: # try faster estimate using previous detection result
-
-            # restore last result
-            last_lane_pixels, last_lane_params, last_models_in_pixel = self.last_detection
-            last_lmodel, _, last_rmodel = last_models_in_pixel
-            # build new lane_pixels, lane_params, models_in_pixel
-            window, stride = 50, 10
-            search_ys = list(range(0, H-window+1, stride))
-            search_lxs = np.polyval(last_lmodel, search_ys).astype(np.int32)
-            search_rxs = np.polyval(last_rmodel, search_ys).astype(np.int32)
-            lxs, mxs, rxs, lys, mys, rys = [], [], [], [], [], []
-            for lx, rx, yy in zip(search_lxs, search_rxs, search_ys):
-                lregion = lane_img[yy:yy+stride, lx-window:lx+window]
-                ys, xs = np.where(lregion>0)
-                for y, x in zip(ys, xs):
-                    lxs.append(x+lx-window)
-                    lys.append(y+yy)
-                rregion = lane_img[yy:yy+stride, rx-window:rx+window]
-                ys, xs = np.where(rregion>0)
-                for y, x in zip(ys, xs):
-                    rxs.append(x+rx-window)
-                    rys.append(y+yy)
-            mxs, mys = rxs, rys #TODO
-            lxs,lys,mxs,mys,rxs,rys = map(np.array, [lxs,lys,mxs,mys,rxs,rys])
-            lane_pixels = (lxs, lys, mxs, mys, rxs, rys)
-            lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
-                self.transformer.x_mpp, self.transformer.y_mpp)
-            _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
-            # update last result
-            self.last_detection = (lane_pixels, lane_params, models_in_pixel)
-            
-        # except:
-
-        #     # if anything goes wrong, just use the previous result as default
-        #     if self.last_detection is None: return frame
-        #     lane_pixels, lane_params, models_in_pixel = self.last_detection
+        try:
+            if self.last_detection is None: # first frame, search from scratch
+                lane_params, marked_lane_img, lane_pixels, models_in_pixel = self.detect_image(frame, return_full_estimate=True)
+                self.last_detection = (lane_pixels, lane_params, models_in_pixel)
+                return marked_lane_img
+            else: # try faster estimate using previous detection result
+                # restore last result
+                last_lane_pixels, last_lane_params, last_models_in_pixel = self.last_detection
+                last_lmodel, _, last_rmodel = last_models_in_pixel
+                # build new lane_pixels, lane_params, models_in_pixel
+                window, stride = 50, 10
+                search_ys = list(range(0, H-window+1, stride))
+                search_lxs = np.polyval(last_lmodel, search_ys).astype(np.int32)
+                search_rxs = np.polyval(last_rmodel, search_ys).astype(np.int32)
+                lxs, mxs, rxs, lys, mys, rys = [], [], [], [], [], []
+                for lx, rx, yy in zip(search_lxs, search_rxs, search_ys):
+                    lregion = lane_img[yy:yy+stride, lx-window:lx+window]
+                    ys, xs = np.where(lregion>0)
+                    for y, x in zip(ys, xs):
+                        lxs.append(x+lx-window)
+                        lys.append(y+yy)
+                    rregion = lane_img[yy:yy+stride, rx-window:rx+window]
+                    ys, xs = np.where(rregion>0)
+                    for y, x in zip(ys, xs):
+                        rxs.append(x+rx-window)
+                        rys.append(y+yy)
+                ## this is probably not the best way of estimating the middle of lanes
+                ## but it's worth minimizing the api
+                left_lane, right_lane = dict(zip(lys, lxs)), dict(zip(rys, rxs))
+                for y in range(H):
+                    if y in left_lane and y in right_lane:
+                        mys.append(y)
+                        mxs.append( (left_lane[y]+right_lane[y])/2 )
+                lxs,lys,mxs,mys,rxs,rys = map(np.array, [lxs,lys,mxs,mys,rxs,rys])
+                lane_pixels = (lxs, lys, mxs, mys, rxs, rys)
+                lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
+                    self.transformer.x_mpp, self.transformer.y_mpp)
+                _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
+                # update last result - if the detection result is not good enough (two lanes are not roughly in parallel)
+                # force to detect from scracth at the next frame
+                lcoeff, rcoeff = models_in_pixel[0][1], models_in_pixel[-1][1]
+                if np.abs(lcoeff-rcoeff) >= 0.6*np.abs(max(lcoeff, rcoeff)):
+                    self.last_detection = None
+                    print("detect from the scatch at next frame")
+                else:
+                    self.last_detection = (lane_pixels, lane_params, models_in_pixel)
+        except:
+            # if anything goes wrong, just use the previous result as default
+            # or detect nothing if it is also the first frame
+            if self.last_detection is None: return frame
+            lane_pixels, lane_params, models_in_pixel = self.last_detection
 
         l_curvature, r_curvature, offset = lane_params
         text = "curvature: %.2f, %s of center: %.2f" % (r_curvature, 
                                                         "left" if offset > 0 else "right",
-                                                        offset)
+                                                        np.abs(offset))
         marked_lane_img = self.draw_lanes(undistorted_img, models_in_pixel, text)
         return marked_lane_img
         
@@ -126,7 +135,7 @@ class LaneDetector(object):
         # print(l_curvature, r_curvature)
         text = "curvature: %.2f, %s of center: %.2f" % (r_curvature, 
                                                         "left" if offset > 0 else "right",
-                                                        offset)
+                                                        np.abs(offset))
         _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
         marked_lane_img = self.draw_lanes(undistorted_img, models_in_pixel, text)
         if return_full_estimate:
@@ -217,8 +226,11 @@ class LaneDetector(object):
         
 
         lane_layer = np.zeros_like(undistorted_img, dtype=np.uint8)
-        lane_layer = cv2.fillPoly(lane_layer, [np.array([[lxhat[0], 0], [lxhat[-1], H],
-                                                [rxhat[-1], H], [rxhat[0], 0]])], (0, 64, 0))
+        # lane_layer = cv2.fillPoly(lane_layer, [np.array([[lxhat[0], 0], [lxhat[-1], H],
+        #                                         [rxhat[-1], H], [rxhat[0], 0]])], (0, 64, 0))
+
+        lane_layer = cv2.fillPoly(lane_layer, [np.array(list(zip(lxhat, y_span)) 
+                                                        + list(zip(rxhat, y_span))[::-1])], (0, 64, 0))
         for xs, col in zip([lxhat, mxhat, rxhat], 
                            [(255,0,0), (255,0,0), (255,0,0)]):
             pts = np.array([(x, y) for x, y in zip(xs, y_span)])
