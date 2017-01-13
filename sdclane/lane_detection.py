@@ -82,13 +82,15 @@ class LaneDetector(object):
                 lane_pixels = (lxs, lys, mxs, mys, rxs, rys)
                 lane_params, _ = self.estimate_lane_params(lane_pixels, (W,H),
                     self.transformer.x_mpp, self.transformer.y_mpp)
+                # smooth out lane parameters by an moving average
+                lane_params = [p*0.9 + 0.1*p0 for p, p0 in zip(lane_params, last_lane_params)]
                 _, models_in_pixel = self.estimate_lane_params(lane_pixels, (W, H), 1, 1)
                 # update last result - if the detection result is not good enough (two lanes are not roughly in parallel)
                 # force to detect from scracth at the next frame
                 lcoeff, rcoeff = models_in_pixel[0][1], models_in_pixel[-1][1]
-                if np.abs(lcoeff-rcoeff) >= 0.6*np.abs(max(lcoeff, rcoeff)):
+                if np.abs(lcoeff-rcoeff) >= 0.8*np.abs(max(lcoeff, rcoeff)):
                     self.last_detection = None
-                    print("detect from the scatch at next frame")
+                    # print("detect from the scatch at next frame")
                 else:
                     self.last_detection = (lane_pixels, lane_params, models_in_pixel)
         except:
